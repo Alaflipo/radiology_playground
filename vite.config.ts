@@ -5,6 +5,8 @@ import { viteCommonjs } from '@originjs/vite-plugin-commonjs';
 export default defineConfig({
     plugins: [react(), viteCommonjs()],
 
+    assetsInclude: ['**/*.zip'],
+
     resolve: {
         alias: {
             'node:events': 'events/',

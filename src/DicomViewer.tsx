@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-
-import { Enums, init as initCornerstone, RenderingEngine, type Types} from '@cornerstonejs/core';
-
-import {init as initTools, addTool, StackScrollTool, ToolGroupManager, Enums as ToolsEnums} from '@cornerstonejs/tools';
-
+import { Enums, init as initCornerstone, registerImageLoader, RenderingEngine, type Types, imageLoader} from '@cornerstonejs/core';
+import {init as initTools, addTool, StackScrollTool, ToolGroupManager, segmentation, Enums as ToolsEnums} from '@cornerstonejs/tools';
 import dicomImageLoader from '@cornerstonejs/dicom-image-loader';
-
+import { cornerstoneNiftiImageLoader, createNiftiImageIdsAndCacheMetadata, init as initNiftiLoader } from '@cornerstonejs/nifti-volume-loader';
 import * as dicomParser from 'dicom-parser';
+import * as niftiReader from 'nifti-reader-js';
+
+import ct_file_url from './assets/DICOM_examples/ct-lung.zip'
+import JSZip from "jszip";
 
 initTools();
 addTool(StackScrollTool);
@@ -33,6 +34,8 @@ export default function DicomViewer() {
             dicomImageLoader.init({
                 useLegacyMetadataProvider: true,
             });
+            initNiftiLoader();
+            registerImageLoader('nifti', cornerstoneNiftiImageLoader);
 
             engine = new RenderingEngine('dicom-engine');
 
@@ -87,8 +90,82 @@ export default function DicomViewer() {
         };
     }, []); 
 
-    async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-        const files = Array.from(event.target.files ?? []);
+    function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+        void loadFiles(Array.from(event.target.files ?? []));
+    }
+
+    function handleNiftiFileChange(event: ChangeEvent<HTMLInputElement>) {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+
+        if (file) {
+            void loadNiftiFile(file);
+        }
+    }
+
+    async function loadNiftiFile(file: File) {
+        const viewport = viewportRef.current;
+
+        if (!viewport) return;
+        if (!file.name.toLowerCase().endsWith('.nii.gz')) {
+            console.error('Select a .nii.gz NIfTI file.');
+            return;
+        }
+
+        let objectUrl: string | undefined;
+
+        try {
+            const compressedData = await file.arrayBuffer();
+            if (!niftiReader.isCompressed(compressedData)) {
+                throw new Error('The selected .nii.gz file is not gzip-compressed.');
+            }
+
+            const decompressedData = new Uint8Array(
+                niftiReader.decompress(compressedData)
+            );
+            const niftiData = new ArrayBuffer(decompressedData.byteLength);
+            new Uint8Array(niftiData).set(decompressedData);
+            objectUrl = URL.createObjectURL(
+                new Blob([niftiData], {
+                    type: 'application/octet-stream',
+                })
+            );
+
+            const imageIds = await createNiftiImageIdsAndCacheMetadata({
+                url: objectUrl,
+            });
+            if (!imageIds?.length) {
+                throw new Error('No image slices were found in the NIfTI file.');
+            }
+
+            await viewport.setStack(imageIds);
+            setCurrentIndex(0);
+            setImageCount(imageIds.length);
+            viewport.render();
+        } catch (error) {
+            console.error(`Failed to load NIfTI file "${file.name}".`, error);
+        } finally {
+            if (objectUrl) {
+                URL.revokeObjectURL(objectUrl);
+            }
+        }
+    }
+
+    async function loadZipFile() {
+        try {
+            const response = await fetch(ct_file_url);
+            const arrayBuffer = await response.arrayBuffer();
+
+            const zip = new JSZip();
+            const loadedZip = await zip.loadAsync(arrayBuffer);
+
+            const files = loadedZip.file
+        } catch {
+            console.error('Failed to load zip file');
+        }
+    }
+
+    async function loadFiles(files: File[]) {
         const viewport = viewportRef.current;
 
         if (files.length === 0 || !viewport) return;
@@ -182,8 +259,65 @@ export default function DicomViewer() {
         viewport.render();
     }
 
+    async function addMask() {
+        const viewport = viewportRef.current;
+        if (!viewport) return;
+
+        const imageId = viewport.getCurrentImageId();
+
+        // Create an empty mask with the same dimensions and geometry.
+        const maskImage = imageLoader.createAndCacheDerivedLabelmapImage(imageId);
+
+        const pixels = maskImage.getPixelData();
+        const width = maskImage.columns;
+        const height = maskImage.rows;
+
+        // Example mask: a circle in the center.
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const radius = Math.min(width, height) / 6;
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const inside =
+                    (x - centerX) ** 2 + (y - centerY) ** 2 < radius ** 2;
+
+                pixels[y * width + x] = inside ? 1 : 0;
+            }
+        }
+
+        const segmentationId = crypto.randomUUID();
+
+        // Register the mask data.
+        segmentation.addSegmentations([
+            {
+                segmentationId,
+                representation: {
+                    type: ToolsEnums.SegmentationRepresentations.Labelmap,
+                    data: {
+                        imageIds: [maskImage.imageId],
+                    },
+                },
+            },
+        ]);
+
+        // Show it on the existing viewport.
+        await segmentation.addLabelmapRepresentationToViewport(
+            'dicom-viewport',
+            [{ segmentationId }]
+        );
+
+        viewport.render();
+    }
+
     return (
         <div>
+            <input
+                type="file"
+                accept=".nii.gz,application/gzip"
+                disabled={!ready}
+                onChange={handleNiftiFileChange}
+            />
             <input
                 type="file"
                 accept=".dcm,application/dicom"
@@ -218,6 +352,9 @@ export default function DicomViewer() {
                 console.log(viewportRef.current?.getCurrentImageIdIndex())
                 viewportRef.current?.scroll(1)
             }}>Next</button>
+            <button onClick={addMask} disabled={!imageCount}>
+                Add test mask
+            </button>
         </div>
     );
 }

@@ -12,9 +12,12 @@
   "dependencies": {
     "@cornerstonejs/core": "5.13.1",
     "@cornerstonejs/dicom-image-loader": "5.13.1",
+    "@cornerstonejs/nifti-volume-loader": "^5.13.1",
     "@cornerstonejs/tools": "5.13.1",
     "dicom-parser": "^1.8.21",
     "events": "^3.3.0",
+    "jszip": "^3.10.2",
+    "nifti-reader-js": "^0.6.9",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
